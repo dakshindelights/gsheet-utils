@@ -1,0 +1,25 @@
+function deleteLabelPDFs() {
+  const folderId = null; // Optional: set to null if searching the whole drive
+  const prefix = 'Labels_';
+
+  let files;
+  if (folderId) {
+    const folder = DriveApp.getFolderById(folderId);
+    files = folder.getFiles();
+  } else {
+    files = DriveApp.getFiles();
+  }
+
+  let deletedCount = 0;
+  while (files.hasNext()) {
+    const file = files.next();
+    const name = file.getName();
+    if (name.startsWith(prefix)) {
+      Logger.log('Deleting: ' + name);
+      file.setTrashed(true);  // Safer than file.delete(), sends to trash
+      deletedCount++;
+    }
+  }
+
+  Logger.log(`Deleted ${deletedCount} file(s) starting with '${prefix}'.`);
+}
