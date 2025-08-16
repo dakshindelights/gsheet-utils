@@ -1,100 +1,91 @@
 function generateColumnLabelsStyledPDF() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const formSheet = ss.getSheetByName('Form responses 1');
-  const data = formSheet.getDataRange().getValues();
+  const sheet = ss.getActiveSheet();
+  const data = sheet.getDataRange().getValues();
+  if (data.length < 2) throw new Error("No data rows found.");
 
-  const headers = data[0];
-  const entries = data.slice(1);
+  const headers = data[0].map(flattenHeader);
+  const rows = data.slice(1);
 
-  const cityIndex = headers.indexOf('City');
-  const nameIndex = headers.indexOf('Full Name');
-  const addressIndex = headers.indexOf('House Number and Street Name');
-  const postcodeIndex = headers.indexOf('Postcode');
-  const mobileIndex = headers.indexOf('Phone Number');
+  // Core customer columns (look them up flexibly)
+  const nameIndex     = findCol(headers, "Name");
+  const phoneIndex    = findCol(headers, "Phone Number");
+  const addressIndex  = findCol(headers, "House Number and Street Name");
+  const cityIndex     = findCol(headers, "City");
+  const postcodeIndex = findCol(headers, "Postcode");
 
-  // Identify dish columns and prices
+  // Dish columns = any header that has a £ price
   const dishColumns = [];
-  for (let i = 0; i < headers.length; i++) {
-    const header = headers[i];
-    if (header.includes("£")) {
-      const match = header.match(/^(.*?)\s*[-–]\s*£([\d.]+)/);
-      if (match) {
-        dishColumns.push({
-          name: match[1].trim(),
-          price: parseFloat(match[2]),
-          index: i
-        });
-      }
+  headers.forEach((h, i) => {
+    const priceMatch = h.match(/£\s*([\d]+(?:\.\d+)?)/);
+    if (priceMatch) {
+      dishColumns.push({
+        name: h.replace(/£.*/,"").trim(),
+        price: parseFloat(priceMatch[1]),
+        index: i
+      });
     }
-  }
+  });
 
-  // Group entries by city
+  // Group rows by city
   const cityGroups = {};
-  for (let row of entries) {
-    const city = row[cityIndex];
-    if (!city) continue;
+  rows.forEach(r => {
+    const city = safeCell(r, cityIndex);
+    if (!city) return;
     if (!cityGroups[city]) cityGroups[city] = [];
-    cityGroups[city].push(row);
-  }
+    cityGroups[city].push(r);
+  });
 
-  // Generate a document per city
+  // Generate doc per city
   Object.keys(cityGroups).forEach(city => {
     const doc = DocumentApp.create(`Labels_MultiColumn_${city}`);
     const body = doc.getBody();
     body.setAttributes({
-      [DocumentApp.Attribute.FONT_FAMILY]: 'Arial',
+      [DocumentApp.Attribute.FONT_FAMILY]: "Arial",
       [DocumentApp.Attribute.FONT_SIZE]: 10
     });
 
-    const orders = cityGroups[city];
     let table = body.appendTable();
     let rowCount = 0;
+    const orders = cityGroups[city];
 
     for (let i = 0; i < orders.length; i += 2) {
       const row = table.appendTableRow();
 
       for (let j = 0; j < 2; j++) {
-        const index = i + j;
+        const idx = i + j;
         const cell = row.appendTableCell();
-        const para = cell.appendParagraph('');
+        const para = cell.appendParagraph("");
 
-        if (index < orders.length) {
-          const order = orders[index];
-          const name = order[nameIndex] || 'N/A';
-          const address = order[addressIndex] || 'N/A';
-          const postcode = formatUKPostcode(order[postcodeIndex]);
-          const contactNo = order[mobileIndex] || 'N/A';
+        if (idx < orders.length) {
+          const order = orders[idx];
 
-          let totalCost = 0;
+          const name      = safeCell(order, nameIndex)     || "N/A";
+          const address   = safeCell(order, addressIndex)  || "N/A";
+          const postcode  = formatUKPostcode(safeCell(order, postcodeIndex));
+          const phone     = safeCell(order, phoneIndex)    || "N/A";
 
-          // Build label content
-          addBoldLine(para, 'Name: ', name);
-          para.appendText('\n');
-          para.appendText('Order Details:\n').setBold(true);
-          
-          dishColumns.forEach(dish => {
-            const qty = Number(order[dish.index]) || 0;
+          let total = 0;
+          addBoldLine(para, "Name: ", name);
+          para.appendText("\n");
+          para.appendText("Order Details:\n").setBold(true);
+
+          dishColumns.forEach(d => {
+            const qty = Number(order[d.index]) || 0;
             if (qty > 0) {
-              para.appendText(`${dish.name} x${qty}\n`);
-              totalCost += qty * dish.price;
+              para.appendText(`${d.name} x${qty}\n`);
+              total += qty * d.price;
             }
           });
 
-          addBoldLine(para, 'Total Cost: ', `£${totalCost.toFixed(2)}`);
-          para.appendText('\n');
-          addBoldLine(para, 'Address: ', `${address}, ${city}, ${postcode}`);
-          addBoldLine(para, 'Contact Number: ', contactNo);
+          addBoldLine(para, "Total Cost: ", `£${total.toFixed(2)}`);
+          para.appendText("\n");
+          addBoldLine(para, "Address: ", `${address}, ${city}, ${postcode}`);
+          addBoldLine(para, "Contact Number: ", phone);
         }
-
-        cell.setPaddingTop(6);
-        cell.setPaddingBottom(6);
-        cell.setPaddingLeft(10);
-        cell.setPaddingRight(10);
       }
 
       rowCount++;
-
-      // After every 3 rows (6 labels), start new table and page
       if (rowCount % 3 === 0 && i + 2 < orders.length) {
         body.appendPageBreak();
         table = body.appendTable();
@@ -107,19 +98,33 @@ function generateColumnLabelsStyledPDF() {
   });
 }
 
-// Helper function for bold header lines
-function addBoldLine(paragraph, label, value) {
-  if (!value || value.toString().trim() === '') value = 'N/A';
-  paragraph.appendText(label).setBold(true);
-  paragraph.appendText(value + '\n');
+/* === Helpers === */
+
+function flattenHeader(h) {
+  return String(h || "")
+    .replace(/^"+|"+$/g, "")   // strip quotes
+    .replace(/\n+/g, " ")      // replace newlines
+    .replace(/\s+/g, " ")      // collapse spaces
+    .trim();
 }
 
-// Format UK postcode with space before last 3 characters
+function findCol(headers, wanted) {
+  const target = wanted.toLowerCase();
+  return headers.findIndex(h => h.toLowerCase().includes(target));
+}
+
+function safeCell(row, idx) {
+  return (idx == null || idx < 0) ? "" : row[idx];
+}
+
+function addBoldLine(para, label, value) {
+  const v = (value == null || String(value).trim() === "") ? "N/A" : String(value);
+  para.appendText(label).setBold(true);
+  para.appendText(v + "\n");
+}
+
 function formatUKPostcode(postcode) {
-  if (!postcode) return 'N/A';
-  postcode = postcode.replace(/\s+/g, '').toUpperCase();
-  if (postcode.length > 3) {
-    return postcode.slice(0, -3) + ' ' + postcode.slice(-3);
-  }
-  return postcode;
+  if (!postcode) return "N/A";
+  const cleaned = String(postcode).replace(/\s+/g, "").toUpperCase();
+  return cleaned.length > 3 ? cleaned.slice(0, -3) + " " + cleaned.slice(-3) : cleaned;
 }
